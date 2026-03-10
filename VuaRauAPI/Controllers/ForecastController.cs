@@ -9,6 +9,7 @@ namespace VuaRauAPI.Controllers
     [ApiController]
     public class ForecastController : ControllerBase
     {
+        // Chuỗi kết nối đến database Somee của bạn
         private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
 
         // 1. API Lấy danh sách hàng hóa (Để Android hiện danh sách chọn)
@@ -18,7 +19,7 @@ namespace VuaRauAPI.Controllers
             var list = new List<object>();
             using (SqlConnection conn = new SqlConnection(_connectionString))
             {
-                string sql = "SELECT MaHang, TenHang FROM HANGHOA";
+                string sql = "SELECT MaHang, TenHang FROM HANGHOA WHERE TenHang IS NOT NULL";
                 SqlCommand cmd = new SqlCommand(sql, conn);
                 conn.Open();
                 using (var reader = cmd.ExecuteReader())
@@ -32,7 +33,7 @@ namespace VuaRauAPI.Controllers
             return Ok(list);
         }
 
-        // 2. API Dự báo giá (Đã kết nối 2 bảng)
+        // 2. API Dự báo giá (Kết nối 3 bảng để lấy thời gian chính xác)
         [HttpGet("{maHang}/{days}")]
         public ActionResult GetPriceForecast(string maHang, int days)
         {
@@ -41,12 +42,14 @@ namespace VuaRauAPI.Controllers
 
             using (SqlConnection conn = new SqlConnection(_connectionString))
             {
-                // Kết nối bảng XUATKHO_CT với HANGHOA để lấy Tên và Giá
-                string sql = @"SELECT H.TenHang, CAST(X.DGXuat AS REAL) 
+                // SỬA ĐỔI QUAN TRỌNG: Join thêm bảng XUATKHO để lấy NgayXuat
+                // Lấy TOP 2000 dòng gần nhất để AI học nhanh và chính xác
+                string sql = @"SELECT TOP 2000 H.TenHang, CAST(X.DGXuat AS REAL), XK.NgayXuat 
                                FROM XUATKHO_CT X 
                                INNER JOIN HANGHOA H ON X.MaHang = H.MaHang 
-                               WHERE X.MaHang = @maHang 
-                               ORDER BY X.SoPhieuX ASC";
+                               INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX 
+                               WHERE X.MaHang = @maHang AND X.DGXuat > 0 
+                               ORDER BY XK.NgayXuat ASC";
 
                 SqlCommand cmd = new SqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@maHang", maHang);
@@ -61,24 +64,29 @@ namespace VuaRauAPI.Controllers
                 }
             }
 
-            if (data.Count < 5) return BadRequest("Dữ liệu quá ít.");
+            // Kiểm tra số lượng dữ liệu sau khi Join
+            if (data.Count < 5)
+                return BadRequest("Dữ liệu trong bảng XUATKHO_CT liên kết với XUATKHO quá ít.");
 
+            // Bắt đầu xử lý AI với ML.NET
             var mlContext = new MLContext();
             var idataView = mlContext.Data.LoadFromEnumerable(data);
 
+            // Cấu hình thuật toán SSA (Single Spectrum Analysis)
             var pipeline = mlContext.Forecasting.ForecastBySsa(
                 outputColumnName: "Forecast",
                 inputColumnName: "Gia",
-                windowSize: 3,
+                windowSize: data.Count >= 14 ? 7 : 3, // Nếu dữ liệu nhiều thì học theo tuần (7 ngày)
                 seriesLength: data.Count,
                 trainSize: data.Count,
-                horizon: days,
+                horizon: days, // Số ngày Android yêu cầu
                 confidenceLevel: 0.95f);
 
             var model = pipeline.Fit(idataView);
             var forecastingEngine = model.CreateTimeSeriesEngine<PriceData, PriceForecast>(mlContext);
             var predictions = forecastingEngine.Predict();
 
+            // Trả về kết quả JSON chuẩn cho Android nhận diện
             return Ok(new
             {
                 Ma = maHang,
@@ -86,5 +94,16 @@ namespace VuaRauAPI.Controllers
                 DuBao = predictions.Forecast
             });
         }
+    }
+
+    // Các lớp hỗ trợ dữ liệu ML.NET
+    public class PriceData
+    {
+        public float Gia { get; set; }
+    }
+
+    public class PriceForecast
+    {
+        public float[] Forecast { get; set; }
     }
 }

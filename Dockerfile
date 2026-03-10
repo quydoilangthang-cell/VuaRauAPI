@@ -1,5 +1,5 @@
 ﻿FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-RUN apt-get update && apt-get install -y libgomp1 libmkl-full && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libgomp1 libblas3 liblapack3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 EXPOSE 80
 EXPOSE 443

@@ -1,0 +1,6 @@
+@VuaRauAPI_HostAddress = http://localhost:5043
+
+GET {{VuaRauAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

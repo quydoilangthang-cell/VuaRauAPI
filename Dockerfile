@@ -1,4 +1,5 @@
 ﻿FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+RUN apt-get update && apt-get install -y libgomp1
 WORKDIR /app
 EXPOSE 80
 EXPOSE 443

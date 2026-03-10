@@ -89,14 +89,13 @@ namespace VuaRauAPI.Controllers
 
                 // windowSize = 2: Cấu hình cực nhẹ để không lỗi 500 trên Render Free
                 var pipeline = mlContext.Forecasting.ForecastBySsa(
-                    outputColumnName: "Forecast",
-                    inputColumnName: "Gia",
-                    windowSize: 2,
-                    seriesLength: data.Count,
-                    trainSize: data.Count,
-                    horizon: days,
-                    confidenceLevel: 0.95f);
-
+    outputColumnName: "Forecast",
+    inputColumnName: "Gia",
+    windowSize: 2,
+    seriesLength: data.Count,
+    trainSize: data.Count,
+    horizon: days,
+    confidenceLevel: 0.95f);
                 var model = pipeline.Fit(idataView);
                 var forecastingEngine = model.CreateTimeSeriesEngine<PriceData, PriceForecast>(mlContext);
                 var predictions = forecastingEngine.Predict();

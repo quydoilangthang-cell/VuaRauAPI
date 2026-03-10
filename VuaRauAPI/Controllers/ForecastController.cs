@@ -2,6 +2,8 @@
 using Microsoft.ML;
 using Microsoft.ML.Transforms.TimeSeries;
 using System.Data.SqlClient;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace VuaRauAPI.Controllers
 {
@@ -9,17 +11,16 @@ namespace VuaRauAPI.Controllers
     [ApiController]
     public class ForecastController : ControllerBase
     {
-        // Chuỗi kết nối đến database Somee của bạn
+        // Chuỗi kết nối giữ nguyên của anh
         private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
 
-        // 1. API Lấy danh sách hàng hóa (Để Android hiện danh sách chọn)
         [HttpGet("danh-sach-hang")]
         public ActionResult GetProducts()
         {
             var list = new List<object>();
             using (SqlConnection conn = new SqlConnection(_connectionString))
             {
-                string sql = "SELECT MaHang, TenHang FROM HANGHOA WHERE TenHang IS NOT NULL";
+                string sql = "SELECT MaHang, TenHang FROM HANGHOA";
                 SqlCommand cmd = new SqlCommand(sql, conn);
                 conn.Open();
                 using (var reader = cmd.ExecuteReader())
@@ -33,7 +34,6 @@ namespace VuaRauAPI.Controllers
             return Ok(list);
         }
 
-        // 2. API Dự báo giá (Kết nối 3 bảng để lấy thời gian chính xác)
         [HttpGet("{maHang}/{days}")]
         public ActionResult GetPriceForecast(string maHang, int days)
         {
@@ -42,17 +42,21 @@ namespace VuaRauAPI.Controllers
 
             using (SqlConnection conn = new SqlConnection(_connectionString))
             {
-                // SỬA ĐỔI QUAN TRỌNG: Join thêm bảng XUATKHO để lấy NgayXuat
-                // Lấy TOP 2000 dòng gần nhất để AI học nhanh và chính xác
-                string sql = @"SELECT TOP 2000 H.TenHang, CAST(X.DGXuat AS REAL), XK.NgayXuat 
+                // Câu lệnh SQL đã tối ưu để khớp 2830 dòng của anh
+                string sql = @"SELECT TOP 2000 
+                                    H.TenHang, 
+                                    CAST(X.DGXuat AS REAL), 
+                                    XK.NgayXuat
                                FROM XUATKHO_CT X 
-                               INNER JOIN HANGHOA H ON X.MaHang = H.MaHang 
-                               INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX 
-                               WHERE X.MaHang = @maHang AND X.DGXuat > 0 
+                               INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
+                               INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
+                               WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang))
+                               AND X.DGXuat > 0
                                ORDER BY XK.NgayXuat ASC";
 
                 SqlCommand cmd = new SqlCommand(sql, conn);
-                cmd.Parameters.AddWithValue("@maHang", maHang);
+                cmd.Parameters.AddWithValue("@maHang", maHang.Trim());
+
                 conn.Open();
                 using (var reader = cmd.ExecuteReader())
                 {
@@ -64,39 +68,31 @@ namespace VuaRauAPI.Controllers
                 }
             }
 
-            // Kiểm tra số lượng dữ liệu sau khi Join
+            // Kiểm tra dữ liệu sau khi truy vấn
             if (data.Count < 5)
-                return BadRequest("Dữ liệu trong bảng XUATKHO_CT liên kết với XUATKHO quá ít.");
+                return BadRequest($"Tìm thấy {data.Count} dòng. Kiểm tra lại liên kết SoPhieuX!");
 
-            // Bắt đầu xử lý AI với ML.NET
             var mlContext = new MLContext();
             var idataView = mlContext.Data.LoadFromEnumerable(data);
 
-            // Cấu hình thuật toán SSA (Single Spectrum Analysis)
             var pipeline = mlContext.Forecasting.ForecastBySsa(
                 outputColumnName: "Forecast",
                 inputColumnName: "Gia",
-                windowSize: data.Count >= 14 ? 7 : 3, // Nếu dữ liệu nhiều thì học theo tuần (7 ngày)
+                windowSize: 15,
                 seriesLength: data.Count,
                 trainSize: data.Count,
-                horizon: days, // Số ngày Android yêu cầu
+                horizon: days,
                 confidenceLevel: 0.95f);
 
             var model = pipeline.Fit(idataView);
             var forecastingEngine = model.CreateTimeSeriesEngine<PriceData, PriceForecast>(mlContext);
             var predictions = forecastingEngine.Predict();
 
-            // Trả về kết quả JSON chuẩn cho Android nhận diện
-            return Ok(new
-            {
-                Ma = maHang,
-                Ten = tenHang,
-                DuBao = predictions.Forecast
-            });
+            return Ok(new { Ma = maHang, Ten = tenHang, DuBao = predictions.Forecast });
         }
     }
 
-    // Các lớp hỗ trợ dữ liệu ML.NET
+    // Định nghĩa Class dữ liệu nằm ngoài class Controller nhưng trong Namespace
     public class PriceData
     {
         public float Gia { get; set; }

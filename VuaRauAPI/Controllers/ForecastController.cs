@@ -78,7 +78,7 @@ namespace VuaRauAPI.Controllers
             var pipeline = mlContext.Forecasting.ForecastBySsa(
                 outputColumnName: "Forecast",
                 inputColumnName: "Gia",
-                windowSize: 7,
+                windowSize: 4,
                 seriesLength: data.Count,
                 trainSize: data.Count,
                 horizon: days,

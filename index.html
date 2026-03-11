@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Vựa Rau - Hằng Vương</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f4f7f6; }
+        .container { width: 80%; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-top: 50px; }
+        h1 { color: #2c3e50; }
+        button { padding: 10px 20px; background: #27ae60; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DỰ BÁO GIÁ RAU AI - HẰNG VƯƠNG</h1>
+        <p>Mã hàng: <strong>CH01 (Cải Thảo)</strong></p>
+        <canvas id="myChart"></canvas>
+        <br>
+        <button onclick="fetchPrice()">CẬP NHẬT GIÁ DỰ BÁO</button>
+    </div>
+
+    <script>
+        async function fetchPrice() {
+            // Thay link này bằng link Render thật của anh
+            const response = await fetch('https://vuarauapi.onrender.com/api/Forecast/CH01/15');
+            const data = await response.json();
+            
+            const labels = data.duBao.map((_, i) => "Ngày " + (i + 1));
+            
+            new Chart(document.getElementById('myChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Giá dự báo (VNĐ)',
+                        data: data.duBao,
+                        borderColor: '#27ae60',
+                        backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                }
+            });
+        }
+        fetchPrice(); // Tự động chạy khi mở trang
+    </script>
+</body>
+</html>

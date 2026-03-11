@@ -1,10 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.ML;
-using Microsoft.ML.Data;
+using Microsoft.Data.SqlClient;
 using System.Data.SqlClient;
-using System.Collections.Generic;
-using System.Linq;
-using System;
+using System.Net.Http;
+using System.Text.Json;
 
 namespace VuaRauAPI.Controllers
 {
@@ -12,125 +10,70 @@ namespace VuaRauAPI.Controllers
     [ApiController]
     public class ForecastController : ControllerBase
     {
-        // Chuỗi kết nối giữ nguyên của anh
-        private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
-
-        [HttpGet("danh-sach-hang")]
-        public ActionResult GetProducts()
-        {
-            var list = new List<object>();
-            try
-            {
-                using (SqlConnection conn = new SqlConnection(_connectionString))
-                {
-                    string sql = "SELECT MaHang, TenHang FROM HANGHOA";
-                    SqlCommand cmd = new SqlCommand(sql, conn);
-                    conn.Open();
-                    using (var reader = cmd.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            list.Add(new { Ma = reader.GetString(0).Trim(), Ten = reader.GetString(1).Trim() });
-                        }
-                    }
-                }
-                return Ok(list);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "Lỗi kết nối DB: " + ex.Message);
-            }
-        }
+        private readonly string _connectionString = "Server=sql.bsite.net\\MSSQL2016;Database=dangdinhlap_VuaRau;User Id=dangdinhlap_VuaRau;Password=YourPassword;TrustServerCertificate=True;";
 
         [HttpGet("{maHang}/{days}")]
-        public ActionResult GetPriceForecast(string maHang, int days)
+        public async Task<ActionResult> GetPriceForecast(string maHang, int days)
         {
-            var rawData = new List<PriceDataForAI>();
-            string tenHang = "";
+            // API Key chính chủ của anh Lập
+            string apiKey = "7130879d3ff03d4a77fa16c55cac8728";
+            string city = "Da Lat"; // Khu vực nguồn hàng
 
             try
             {
+                // 1. LẤY GIÁ MỚI NHẤT TỪ SQL
+                float currentPrice = 0;
+                string tenHang = "";
                 using (SqlConnection conn = new SqlConnection(_connectionString))
                 {
-                    // Lấy 200 dòng mới nhất để AI học xu hướng giá hiện tại
-                    string sql = @"SELECT TOP 200 
-                                        H.TenHang, 
-                                        CAST(X.DGXuat AS REAL), 
-                                        XK.NgayXuat
-                                   FROM XUATKHO_CT X 
-                                   INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
+                    string sql = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
+                                   FROM XUATKHO_CT X INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
                                    INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
-                                   WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang))
-                                   AND X.DGXuat > 0
+                                   WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang)) AND X.DGXuat > 0
                                    ORDER BY XK.NgayXuat DESC";
-
                     SqlCommand cmd = new SqlCommand(sql, conn);
                     cmd.Parameters.AddWithValue("@maHang", maHang.Trim());
-
                     conn.Open();
                     using (var reader = cmd.ExecuteReader())
                     {
-                        while (reader.Read())
+                        if (reader.Read())
                         {
                             tenHang = reader.GetString(0);
-                            rawData.Add(new PriceDataForAI { Price = reader.GetFloat(1) });
+                            currentPrice = reader.GetFloat(1);
                         }
                     }
                 }
 
-                if (rawData.Count < 5)
-                    return BadRequest($"Dữ liệu quá ít ({rawData.Count} dòng). Team Hằng Vương cần ít nhất 5 ngày dữ liệu.");
+                if (currentPrice == 0) return BadRequest("Không tìm thấy dữ liệu giá cho mã này.");
 
-                // Đảo lại để đúng thứ tự thời gian: cũ -> mới
-                rawData.Reverse();
+                // 2. GỌI API THỜI TIẾT THẬT TỪ OPENWEATHER
+                using var client = new HttpClient();
+                var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
 
-                // Đánh số thứ tự (Index) cho dữ liệu để AI học theo thời gian
-                for (int i = 0; i < rawData.Count; i++)
+                if (!weatherRes.IsSuccessStatusCode)
+                    return Ok(new { tb = "Đang chờ kích hoạt API Key (30p), giá tạm tính đi ngang", ma = maHang, duBao = Enumerable.Repeat(currentPrice, days) });
+
+                var weatherData = await weatherRes.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(weatherData);
+                var list = doc.RootElement.GetProperty("list");
+
+                // 3. LOGIC DỰ BÁO: GIÁ = GIÁ GỐC * HỆ SỐ THỜI TIẾT
+                var forecastResult = new List<object>();
+                var rnd = new Random();
+
+                for (int i = 0; i < days; i++)
                 {
-                    rawData[i].TimeIndex = (float)i;
-                }
+                    // Lấy dữ liệu thời tiết mỗi ngày (cách nhau 8 slot thời gian)
+                    int weatherIndex = Math.Min(i * 8, list.GetArrayLength() - 1);
+                    float weatherFactor = 1.0f;
+                    string weatherDesc = "Nắng đẹp/Mây";
 
-                var mlContext = new MLContext();
-                var trainingData = mlContext.Data.LoadFromEnumerable(rawData);
+                    var mainWeather = list[weatherIndex].GetProperty("weather")[0].GetProperty("main").GetString();
 
-                // Sử dụng thuật toán Regression (Sdca) - Cực nhẹ, KHÔNG CẦN THƯ VIỆN NGOÀI
-                var pipeline = mlContext.Transforms.CopyColumns(outputColumnName: "Label", inputColumnName: "Price")
-                    .Append(mlContext.Transforms.Concatenate("Features", "TimeIndex"))
-                    .Append(mlContext.Regression.Trainers.Sdca(labelColumnName: "Label", maximumNumberOfIterations: 100));
-
-                var model = pipeline.Fit(trainingData);
-                var predictionEngine = mlContext.Model.CreatePredictionEngine<PriceDataForAI, PricePrediction>(model);
-
-                // Tiến hành dự báo cho số ngày tiếp theo
-                var forecastResults = new List<float>();
-                float lastIndex = rawData.Count - 1;
-
-                for (int i = 1; i <= days; i++)
-                {
-                    var prediction = predictionEngine.Predict(new PriceDataForAI { TimeIndex = lastIndex + i });
-                    // Đảm bảo giá dự báo không bị âm do biến động dữ liệu
-                    forecastResults.Add(prediction.Score > 0 ? (float)Math.Round(prediction.Score, 2) : rawData.Last().Price);
-                }
-
-                return Ok(new { Ma = maHang, Ten = tenHang, DuBao = forecastResults });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Lỗi AI vựa rau: {ex.Message}");
-            }
-        }
-    }
-
-    // Các class hỗ trợ AI
-    public class PriceDataForAI
-    {
-        public float TimeIndex { get; set; } // Trục thời gian
-        public float Price { get; set; }     // Giá thực tế
-    }
-
-    public class PricePrediction
-    {
-        [ColumnName("Score")]
-        public float Score { get; set; }     // Giá dự báo
-    }
-}
+                    // Nếu mưa tăng 15%, nếu bão tăng 30%
+                    if (mainWeather == "Rain" || mainWeather == "Drizzle")
+                    {
+                        weatherFactor = 1.15f;
+                        weatherDesc = "Có mưa (Giá tăng)";
+                    }
+                    else if (mainWeather == "Thunderstorm") {

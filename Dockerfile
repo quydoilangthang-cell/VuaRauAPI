@@ -1,22 +1,26 @@
-﻿FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-RUN apt-get update && apt-get install -y libgomp1 libatlas-base-dev && rm -rf /var/lib/apt/lists/*
+﻿# Giai đoạn chạy (Runtime)
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
 EXPOSE 80
 EXPOSE 443
 
+# Giai đoạn Build
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-# Chú ý: Trỏ vào thư mục con VuaRauAPI
-COPY ["VuaRauAPI/VuaRauAPI.csproj", "VuaRauAPI/"]
-RUN dotnet restore "VuaRauAPI/VuaRauAPI.csproj"
 
+# Copy file project và restore (Anh kiểm tra lại tên file .csproj cho đúng nhé)
+COPY ["VuaRauAPI.csproj", "./"]
+RUN dotnet restore "VuaRauAPI.csproj"
+
+# Copy toàn bộ code và build
 COPY . .
-WORKDIR "/src/VuaRauAPI"
 RUN dotnet build "VuaRauAPI.csproj" -c Release -o /app/build
 
+# Giai đoạn Publish
 FROM build AS publish
 RUN dotnet publish "VuaRauAPI.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
+# Giai đoạn cuối: Chạy ứng dụng
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .

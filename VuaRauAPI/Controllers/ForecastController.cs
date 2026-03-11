@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.ML;
-using Microsoft.ML.Transforms.TimeSeries;
+using Microsoft.ML.Data;
 using System.Data.SqlClient;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,7 +12,7 @@ namespace VuaRauAPI.Controllers
     [ApiController]
     public class ForecastController : ControllerBase
     {
-        // Chuỗi kết nối giữ nguyên
+        // Chuỗi kết nối giữ nguyên của anh
         private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
 
         [HttpGet("danh-sach-hang")]
@@ -30,7 +30,7 @@ namespace VuaRauAPI.Controllers
                     {
                         while (reader.Read())
                         {
-                            list.Add(new { Ma = reader.GetString(0), Ten = reader.GetString(1) });
+                            list.Add(new { Ma = reader.GetString(0).Trim(), Ten = reader.GetString(1).Trim() });
                         }
                     }
                 }
@@ -45,14 +45,14 @@ namespace VuaRauAPI.Controllers
         [HttpGet("{maHang}/{days}")]
         public ActionResult GetPriceForecast(string maHang, int days)
         {
-            var data = new List<PriceData>();
+            var rawData = new List<PriceDataForAI>();
             string tenHang = "";
 
             try
             {
                 using (SqlConnection conn = new SqlConnection(_connectionString))
                 {
-                    // LẤY 200 DÒNG MỚI NHẤT để nhẹ server Render
+                    // Lấy 200 dòng mới nhất để AI học xu hướng giá hiện tại
                     string sql = @"SELECT TOP 200 
                                         H.TenHang, 
                                         CAST(X.DGXuat AS REAL), 
@@ -62,7 +62,7 @@ namespace VuaRauAPI.Controllers
                                    INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
                                    WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang))
                                    AND X.DGXuat > 0
-                                   ORDER BY XK.NgayXuat DESC"; // Lấy ngày mới nhất
+                                   ORDER BY XK.NgayXuat DESC";
 
                     SqlCommand cmd = new SqlCommand(sql, conn);
                     cmd.Parameters.AddWithValue("@maHang", maHang.Trim());
@@ -73,51 +73,64 @@ namespace VuaRauAPI.Controllers
                         while (reader.Read())
                         {
                             tenHang = reader.GetString(0);
-                            data.Add(new PriceData { Gia = reader.GetFloat(1) });
+                            rawData.Add(new PriceDataForAI { Price = reader.GetFloat(1) });
                         }
                     }
                 }
 
-                // Đảo lại danh sách cho đúng trình tự thời gian (từ cũ đến mới) để AI học
-                data.Reverse();
+                if (rawData.Count < 5)
+                    return BadRequest($"Dữ liệu quá ít ({rawData.Count} dòng). Team Hằng Vương cần ít nhất 5 ngày dữ liệu.");
 
-                if (data.Count < 5)
-                    return BadRequest($"Tìm thấy {data.Count} dòng. Cần tối thiểu 5 dòng để dự báo!");
+                // Đảo lại để đúng thứ tự thời gian: cũ -> mới
+                rawData.Reverse();
+
+                // Đánh số thứ tự (Index) cho dữ liệu để AI học theo thời gian
+                for (int i = 0; i < rawData.Count; i++)
+                {
+                    rawData[i].TimeIndex = (float)i;
+                }
 
                 var mlContext = new MLContext();
-                var idataView = mlContext.Data.LoadFromEnumerable(data);
+                var trainingData = mlContext.Data.LoadFromEnumerable(rawData);
 
-                // windowSize = 2: Cấu hình cực nhẹ để không lỗi 500 trên Render Free
-                var pipeline = mlContext.Forecasting.ForecastBySsa(
-    outputColumnName: "Forecast",
-    inputColumnName: "Gia",
-    windowSize: 2,
-    seriesLength: data.Count,
-    trainSize: data.Count,
-    horizon: days,
-    confidenceLevel: 0.95f);
-                var model = pipeline.Fit(idataView);
-                var forecastingEngine = model.CreateTimeSeriesEngine<PriceData, PriceForecast>(mlContext);
-                var predictions = forecastingEngine.Predict();
+                // Sử dụng thuật toán Regression (Sdca) - Cực nhẹ, KHÔNG CẦN THƯ VIỆN NGOÀI
+                var pipeline = mlContext.Transforms.CopyColumns(outputColumnName: "Label", inputColumnName: "Price")
+                    .Append(mlContext.Transforms.Concatenate("Features", "TimeIndex"))
+                    .Append(mlContext.Regression.Trainers.Sdca(labelColumnName: "Label", maximumNumberOfIterations: 100));
 
-                return Ok(new { Ma = maHang, Ten = tenHang, DuBao = predictions.Forecast });
+                var model = pipeline.Fit(trainingData);
+                var predictionEngine = mlContext.Model.CreatePredictionEngine<PriceDataForAI, PricePrediction>(model);
 
+                // Tiến hành dự báo cho số ngày tiếp theo
+                var forecastResults = new List<float>();
+                float lastIndex = rawData.Count - 1;
+
+                for (int i = 1; i <= days; i++)
+                {
+                    var prediction = predictionEngine.Predict(new PriceDataForAI { TimeIndex = lastIndex + i });
+                    // Đảm bảo giá dự báo không bị âm do biến động dữ liệu
+                    forecastResults.Add(prediction.Score > 0 ? (float)Math.Round(prediction.Score, 2) : rawData.Last().Price);
+                }
+
+                return Ok(new { Ma = maHang, Ten = tenHang, DuBao = forecastResults });
             }
             catch (Exception ex)
             {
-                // Trả về lỗi chi tiết để dễ sửa
-                return StatusCode(500, $"Lỗi dự báo: {ex.Message} -> {ex.InnerException?.Message}");
+                return StatusCode(500, $"Lỗi AI vựa rau: {ex.Message}");
             }
         }
     }
 
-    public class PriceData
+    // Các class hỗ trợ AI
+    public class PriceDataForAI
     {
-        public float Gia { get; set; }
+        public float TimeIndex { get; set; } // Trục thời gian
+        public float Price { get; set; }     // Giá thực tế
     }
 
-    public class PriceForecast
+    public class PricePrediction
     {
-        public float[] Forecast { get; set; }
+        [ColumnName("Score")]
+        public float Score { get; set; }     // Giá dự báo
     }
 }

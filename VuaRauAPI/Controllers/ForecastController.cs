@@ -42,7 +42,7 @@ namespace VuaRauAPI.Controllers
         [HttpGet("{maHang}/{days}")]
         public async Task<ActionResult> GetPriceForecast(string maHang, int days)
         {
-            string apiKey = "7130879d3ff03d4a77fa16c55cac8728"; //
+            string apiKey = "7130879d3ff03d4a77fa16c55cac8728";
             string city = "Da Lat";
             float currentPrice = 0;
             string tenHang = "";
@@ -54,7 +54,7 @@ namespace VuaRauAPI.Controllers
                 {
                     conn.Open();
 
-                    // 1. LẤY GIÁ GỐC (Dùng DGXuat từ XUATKHO_CT)
+                    // 1. LẤY GIÁ GỐC (Dùng DGXuat)
                     string sqlGia = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
                                        FROM XUATKHO_CT X INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
                                        INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
@@ -71,9 +71,8 @@ namespace VuaRauAPI.Controllers
                         }
                     }
 
-                    // 2. PHÂN TÍCH CHU KỲ DỰA TRÊN XUẤT KHO (Vì nhập kho không có data)
-                    // Tính lượng xuất trung bình của tháng này trong quá khứ để đoán mùa cao điểm
-                    string sqlXuat = @"SELECT AVG(CAST(X.SoLuong AS REAL)) FROM XUATKHO_CT X 
+                    // 2. PHÂN TÍCH CHU KỲ (Dùng đúng cột SLXuat từ hình 620c93)
+                    string sqlXuat = @"SELECT AVG(CAST(X.SLXuat AS REAL)) FROM XUATKHO_CT X 
                                        INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
                                        WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang))
                                        AND MONTH(XK.NgayXuat) = MONTH(GETDATE())";
@@ -85,16 +84,15 @@ namespace VuaRauAPI.Controllers
                         if (resXuat != null && resXuat != DBNull.Value)
                         {
                             float avgQty = Convert.ToSingle(resXuat);
-                            // Nếu lượng xuất tháng này cao -> Nhu cầu lớn -> Giá tăng nhẹ
-                            if (avgQty > 500) seasonalFactor = 0.10f;
+                            if (avgQty > 500) seasonalFactor = 0.10f; // Tháng cao điểm xuất hàng -> Giá tăng
                         }
                     }
                     catch { seasonalFactor = 0; }
                 }
 
-                if (currentPrice == 0) return BadRequest("Không có dữ liệu xuất kho.");
+                if (currentPrice == 0) return BadRequest("Không có dữ liệu giá.");
 
-                // 3. LẤY THỜI TIẾT ĐÀ LẠT
+                // 3. THỜI TIẾT
                 using var client = new HttpClient();
                 var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
                 string weatherContent = weatherRes.IsSuccessStatusCode ? await weatherRes.Content.ReadAsStringAsync() : "";
@@ -107,25 +105,21 @@ namespace VuaRauAPI.Controllers
                     DateTime fDate = DateTime.Now.AddDays(i + 1);
                     float totalFactor = 1.0f + seasonalFactor;
 
-                    // Logic Thời tiết
                     if (!string.IsNullOrEmpty(weatherContent))
                     {
                         using var doc = JsonDocument.Parse(weatherContent);
                         var wList = doc.RootElement.GetProperty("list");
                         int idx = Math.Min(i * 8, wList.GetArrayLength() - 1);
                         string mainW = wList[idx].GetProperty("weather")[0].GetProperty("main").GetString();
-                        if (mainW == "Rain" || mainW == "Drizzle") totalFactor += 0.15f; // Mưa tăng giá
-                        else if (mainW == "Thunderstorm") totalFactor += 0.30f; // Bão tăng mạnh
+                        if (mainW == "Rain" || mainW == "Drizzle") totalFactor += 0.15f;
                     }
 
-                    // Logic Ngày Rằm/Mùng 1
                     if (fDate.Day == 1 || fDate.Day == 14 || fDate.Day == 15 || fDate.Day == 30) totalFactor += 0.20f;
 
-                    float noise = (float)(rnd.NextDouble() * 0.06 - 0.03);
+                    float noise = (float)(rnd.NextDouble() * 0.05 - 0.02);
                     finalValues.Add((float)Math.Round(currentPrice * (totalFactor + noise), 0));
                 }
 
-                // Trả về cho App Android
                 return Ok(new { ma = maHang.Trim(), ten = tenHang.Trim(), duBao = finalValues });
 
             }

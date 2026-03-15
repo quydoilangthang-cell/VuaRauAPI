@@ -1,86 +1,117 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using System.Data.SqlClient;
+using System.Collections.Generic;
+using System.Linq;
+using System;
+using System.Net.Http;
 using System.Text.Json;
+using System.Threading.Tasks;
 
-[HttpGet("{maHang}/{days}")]
-public async Task<ActionResult> GetPriceForecast(string maHang, int days)
+namespace VuaRauAPI.Controllers
 {
-    string apiKey = "7130879d3ff03d4a77fa16c55cac8728";
-    string city = "Da Lat";
-    float currentPrice = 0;
-    string tenHang = "";
-
-    try
+    [Route("api/[controller]")]
+    [ApiController]
+    public class ForecastController : ControllerBase
     {
-        using (SqlConnection conn = new SqlConnection(_connectionString))
+        private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
+
+        [HttpGet("danh-sach-hang")]
+        public ActionResult GetProducts()
         {
-            string sql = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
-                           FROM XUATKHO_CT X INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
-                           INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
-                           WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang)) AND X.DGXuat > 0
-                           ORDER BY XK.NgayXuat DESC";
-            SqlCommand cmd = new SqlCommand(sql, conn);
-            cmd.Parameters.AddWithValue("@maHang", maHang.Trim());
-            conn.Open();
-            using (var reader = cmd.ExecuteReader())
+            var list = new List<object>();
+            try
             {
-                if (reader.Read())
+                using (SqlConnection conn = new SqlConnection(_connectionString))
                 {
-                    tenHang = reader.GetString(0);
-                    currentPrice = reader.GetFloat(1);
+                    string sql = "SELECT MaHang, TenHang FROM HANGHOA";
+                    SqlCommand cmd = new SqlCommand(sql, conn);
+                    conn.Open();
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            list.Add(new { Ma = reader.GetString(0).Trim(), Ten = reader.GetString(1).Trim() });
+                        }
+                    }
                 }
+                return Ok(list);
             }
+            catch (Exception ex) { return StatusCode(500, ex.Message); }
         }
 
-        if (currentPrice == 0) return BadRequest("Không tìm thấy giá.");
-
-        // Gọi API thời tiết
-        using var client = new HttpClient();
-        var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
-
-        var finalForecastValues = new List<float>();
-        var rnd = new Random();
-
-        if (weatherRes.IsSuccessStatusCode)
+        [HttpGet("{maHang}/{days}")]
+        public async Task<ActionResult> GetPriceForecast(string maHang, int days)
         {
-            var weatherData = await weatherRes.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(weatherData);
-            var list = doc.RootElement.GetProperty("list");
+            string apiKey = "7130879d3ff03d4a77fa16c55cac8728";
+            string city = "Da Lat";
+            float currentPrice = 0;
+            string tenHang = "";
 
-            for (int i = 0; i < days; i++)
+            try
             {
-                int weatherIndex = Math.Min(i * 8, list.GetArrayLength() - 1);
-                float factor = 1.0f;
-                var mainWeather = list[weatherIndex].GetProperty("weather")[0].GetProperty("main").GetString();
+                using (SqlConnection conn = new SqlConnection(_connectionString))
+                {
+                    string sql = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
+                                   FROM XUATKHO_CT X INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
+                                   INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
+                                   WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang)) AND X.DGXuat > 0
+                                   ORDER BY XK.NgayXuat DESC";
+                    SqlCommand cmd = new SqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@maHang", maHang.Trim());
+                    conn.Open();
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            tenHang = reader.GetString(0);
+                            currentPrice = reader.GetFloat(1);
+                        }
+                    }
+                }
 
-                if (mainWeather == "Rain" || mainWeather == "Drizzle") factor = 1.15f;
-                else if (mainWeather == "Thunderstorm") factor = 1.35f;
+                if (currentPrice == 0) return BadRequest("Không có giá.");
 
-                float price = currentPrice * (factor + (float)(rnd.NextDouble() * 0.04 - 0.02));
-                finalForecastValues.Add((float)Math.Round(price, 0));
+                using var client = new HttpClient();
+                var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
+
+                var finalValues = new List<float>();
+                var rnd = new Random();
+
+                if (weatherRes.IsSuccessStatusCode)
+                {
+                    var weatherData = await weatherRes.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(weatherData);
+                    var list = doc.RootElement.GetProperty("list");
+                    for (int i = 0; i < days; i++)
+                    {
+                        int idx = Math.Min(i * 8, list.GetArrayLength() - 1);
+                        float factor = 1.0f;
+                        var main = list[idx].GetProperty("weather")[0].GetProperty("main").GetString();
+                        if (main == "Rain" || main == "Drizzle") factor = 1.15f;
+                        else if (main == "Thunderstorm") factor = 1.35f;
+                        float p = currentPrice * (factor + (float)(rnd.NextDouble() * 0.04 - 0.02));
+                        finalValues.Add((float)Math.Round(p, 0));
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < days; i++)
+                    {
+                        float p = currentPrice * (1 + (float)(rnd.NextDouble() * 0.04 - 0.02));
+                        finalValues.Add((float)Math.Round(p, 0));
+                    }
+                }
+
+                // Trả về đúng tên biến cũ (ma, ten, duBao) để App Android không bị lỗi chart
+                return Ok(new
+                {
+                    ma = maHang.Trim(),
+                    ten = tenHang.Trim(),
+                    duBao = finalValues
+                });
+
             }
+            catch (Exception ex) { return StatusCode(500, ex.Message); }
         }
-        else
-        {
-            // Nếu API thời tiết lỗi, cho giá biến động nhẹ để App vẫn có data hiện lên
-            for (int i = 0; i < days; i++)
-            {
-                float price = currentPrice * (1 + (float)(rnd.NextDouble() * 0.04 - 0.02));
-                finalForecastValues.Add((float)Math.Round(price, 0));
-            }
-        }
-
-        // ĐOẠN QUAN TRỌNG NHẤT: Trả về đúng tên biến cũ để App Android đọc được
-        return Ok(new
-        {
-            ma = maHang.Trim(),
-            ten = tenHang.Trim(),
-            duBao = finalForecastValues // Trả về danh sách số đơn thuần cho Chart Android
-        });
-
-    }
-    catch (Exception ex)
-    {
-        return StatusCode(500, ex.Message);
     }
 }

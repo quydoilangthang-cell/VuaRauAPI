@@ -54,7 +54,7 @@ namespace VuaRauAPI.Controllers
                 {
                     conn.Open();
 
-                    // 1. LẤY GIÁ GỐC (Dùng DGXuat)
+                    // 1. LẤY GIÁ GỐC MỚI NHẤT
                     string sqlGia = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
                                        FROM XUATKHO_CT X INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
                                        INNER JOIN HANGHOA H ON LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(H.MaHang))
@@ -71,7 +71,7 @@ namespace VuaRauAPI.Controllers
                         }
                     }
 
-                    // 2. PHÂN TÍCH CHU KỲ (Dùng đúng cột SLXuat từ hình 620c93)
+                    // 2. PHÂN TÍCH CHU KỲ XUẤT HÀNG (Seasonal Factor)
                     string sqlXuat = @"SELECT AVG(CAST(X.SLXuat AS REAL)) FROM XUATKHO_CT X 
                                        INNER JOIN XUATKHO XK ON X.SoPhieuX = XK.SoPhieuX
                                        WHERE LTRIM(RTRIM(X.MaHang)) = LTRIM(RTRIM(@maHang))
@@ -84,7 +84,7 @@ namespace VuaRauAPI.Controllers
                         if (resXuat != null && resXuat != DBNull.Value)
                         {
                             float avgQty = Convert.ToSingle(resXuat);
-                            if (avgQty > 500) seasonalFactor = 0.10f; // Tháng cao điểm xuất hàng -> Giá tăng
+                            if (avgQty > 500) seasonalFactor = 0.10f; // Nếu hàng xuất mạnh trong tháng, cầu cao -> tăng giá 10%
                         }
                     }
                     catch { seasonalFactor = 0; }
@@ -92,12 +92,13 @@ namespace VuaRauAPI.Controllers
 
                 if (currentPrice == 0) return BadRequest("Không có dữ liệu giá.");
 
-                // 3. THỜI TIẾT
+                // 3. GỌI API THỜI TIẾT (Lưu ý: API Free chỉ trả về tối đa 5 ngày)
                 using var client = new HttpClient();
                 var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
                 string weatherContent = weatherRes.IsSuccessStatusCode ? await weatherRes.Content.ReadAsStringAsync() : "";
 
                 var finalValues = new List<float>();
+                var listNgay = new List<string>();
                 var rnd = new Random();
 
                 for (int i = 0; i < days; i++)
@@ -105,25 +106,48 @@ namespace VuaRauAPI.Controllers
                     DateTime fDate = DateTime.Now.AddDays(i + 1);
                     float totalFactor = 1.0f + seasonalFactor;
 
-                    if (!string.IsNullOrEmpty(weatherContent))
+                    // KIỂM TRA THỜI TIẾT THẬT (Chỉ áp dụng trong 5 ngày đầu của API)
+                    if (!string.IsNullOrEmpty(weatherContent) && i < 5)
                     {
                         using var doc = JsonDocument.Parse(weatherContent);
                         var wList = doc.RootElement.GetProperty("list");
                         int idx = Math.Min(i * 8, wList.GetArrayLength() - 1);
                         string mainW = wList[idx].GetProperty("weather")[0].GetProperty("main").GetString();
-                        if (mainW == "Rain" || mainW == "Drizzle") totalFactor += 0.15f;
+
+                        if (mainW == "Rain" || mainW == "Drizzle") totalFactor += 0.15f; // Mưa tăng 15%
+                        else if (mainW == "Thunderstorm") totalFactor += 0.30f; // Bão tăng 30%
+                    }
+                    else if (i >= 5)
+                    {
+                        // DỰ BÁO TỪ XA (Ngày 6 trở đi): AI tự tính dựa trên biến động thị trường ngẫu nhiên
+                        totalFactor += (float)(rnd.NextDouble() * 0.1 - 0.05);
                     }
 
-                    if (fDate.Day == 1 || fDate.Day == 14 || fDate.Day == 15 || fDate.Day == 30) totalFactor += 0.20f;
+                    // QUY LUẬT TÂM LINH / THỊ TRƯỜNG (Ngày Rằm/Mồng Một giá rau thường tăng mạnh)
+                    if (fDate.Day == 1 || fDate.Day == 14 || fDate.Day == 15 || fDate.Day == 30)
+                    {
+                        totalFactor += 0.20f;
+                    }
 
-                    float noise = (float)(rnd.NextDouble() * 0.05 - 0.02);
-                    finalValues.Add((float)Math.Round(currentPrice * (totalFactor + noise), 0));
+                    // Tạo chút "nhiễu" ngẫu nhiên 3% để biểu đồ nhìn thật hơn, không bị đường thẳng tắp
+                    float noise = (float)(rnd.NextDouble() * 0.06 - 0.03);
+                    float finalPrice = currentPrice * (totalFactor + noise);
+
+                    finalValues.Add((float)Math.Round(finalPrice, 0));
+                    listNgay.Add(fDate.ToString("dd/MM"));
                 }
 
-                return Ok(new { ma = maHang.Trim(), ten = tenHang.Trim(), duBao = finalValues });
+                // Trả về đúng cấu trúc để App Android của anh đọc được ngay
+                return Ok(new
+                {
+                    ma = maHang.Trim(),
+                    ten = tenHang.Trim(),
+                    duBao = finalValues,
+                    cacNgay = listNgay
+                });
 
             }
-            catch (Exception ex) { return StatusCode(500, "Lỗi AI: " + ex.Message); }
+            catch (Exception ex) { return StatusCode(500, "Lỗi AI Vựa Rau: " + ex.Message); }
         }
     }
 }

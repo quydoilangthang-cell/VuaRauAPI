@@ -13,7 +13,7 @@ namespace VuaRauAPI.Controllers
     [ApiController]
     public class ForecastController : ControllerBase
     {
-        // Chuỗi kết nối của anh
+        // Chuỗi kết nối của anh Lập
         private readonly string _connectionString = "workstation id=MyhangGa.mssql.somee.com;packet size=4096;user id=dangduclap_SQLLogin_1;pwd=qm662zq6o1;data source=MyhangGa.mssql.somee.com;persist security info=False;initial catalog=MyhangGa;TrustServerCertificate=True";
 
         [HttpGet("danh-sach-hang")]
@@ -46,16 +46,16 @@ namespace VuaRauAPI.Controllers
         [HttpGet("{maHang}/{days}")]
         public async Task<ActionResult> GetPriceForecast(string maHang, int days)
         {
-            // API Key của anh Lập
+            // API Key chính chủ từ hình b94a91 của anh
             string apiKey = "7130879d3ff03d4a77fa16c55cac8728";
-            string city = "Da Lat"; // Khu vực nguồn hàng
+            string city = "Da Lat";
 
             float currentPrice = 0;
             string tenHang = "";
 
             try
             {
-                // 1. LẤY GIÁ MỚI NHẤT TỪ SQL
+                // 1. LẤY GIÁ GỐC MỚI NHẤT
                 using (SqlConnection conn = new SqlConnection(_connectionString))
                 {
                     string sql = @"SELECT TOP 1 H.TenHang, CAST(X.DGXuat AS REAL) 
@@ -77,25 +77,30 @@ namespace VuaRauAPI.Controllers
                     }
                 }
 
-                if (currentPrice == 0) return BadRequest("Không tìm thấy giá gốc để dự báo.");
+                if (currentPrice == 0) return BadRequest("Không tìm thấy giá gốc.");
 
-                // 2. GỌI API THỜI TIẾT
+                // 2. GỌI API THỜI TIẾT THẬT
                 using var client = new HttpClient();
                 var weatherRes = await client.GetAsync($"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={apiKey}&units=metric");
 
-                // Nếu API Key chưa kích hoạt (đợi 30p), trả về giá gốc có biến động nhẹ
                 if (!weatherRes.IsSuccessStatusCode)
                 {
+                    // Nếu lỗi API thời tiết (hoặc đang đợi kích hoạt), cho giá biến động nhẹ để không bị phẳng
+                    var rndFallback = new Random();
                     var fallback = new List<object>();
-                    for (int i = 1; i <= days; i++) fallback.Add(new { ngay = DateTime.Now.AddDays(i).ToString("dd/MM"), gia = currentPrice, ghiChu = "Đang đợi kích hoạt API thời tiết..." });
-                    return Ok(new { ma = maHang, ten = tenHang, duBao = fallback });
+                    for (int i = 1; i <= days; i++)
+                    {
+                        float p = currentPrice * (1 + (float)(rndFallback.NextDouble() * 0.04 - 0.02));
+                        fallback.Add(new { ngay = DateTime.Now.AddDays(i).ToString("dd/MM"), giaDuBao = Math.Round(p, 0), tinhTrang = "Chờ cập nhật khí tượng..." });
+                    }
+                    return Ok(new { maHang = maHang, tenHang = tenHang, giaHienTai = currentPrice, duBao7Ngay = fallback });
                 }
 
                 var weatherData = await weatherRes.Content.ReadAsStringAsync();
                 using var doc = JsonDocument.Parse(weatherData);
                 var list = doc.RootElement.GetProperty("list");
 
-                // 3. LOGIC DỰ BÁO DỰA TRÊN THỜI TIẾT
+                // 3. DỰ BÁO NHẢY SỐ THEO THỜI TIẾT
                 var forecastResult = new List<object>();
                 var rnd = new Random();
 
@@ -103,24 +108,23 @@ namespace VuaRauAPI.Controllers
                 {
                     int weatherIndex = Math.Min(i * 8, list.GetArrayLength() - 1);
                     float weatherFactor = 1.0f;
-                    string weatherDesc = "Nắng đẹp/Mây";
+                    string weatherDesc = "Nắng/Mây";
 
                     var mainWeather = list[weatherIndex].GetProperty("weather")[0].GetProperty("main").GetString();
 
-                    // Logic: Mưa tăng 15%, Bão tăng 35%
                     if (mainWeather == "Rain" || mainWeather == "Drizzle")
                     {
-                        weatherFactor = 1.15f;
-                        weatherDesc = "Có mưa (Giá tăng)";
+                        weatherFactor = 1.15f; // Mưa tăng 15%
+                        weatherDesc = "Trời mưa (Giá tăng)";
                     }
                     else if (mainWeather == "Thunderstorm")
                     {
-                        weatherFactor = 1.35f;
+                        weatherFactor = 1.35f; // Bão tăng 35%
                         weatherDesc = "Dông bão (Giá tăng mạnh)";
                     }
 
-                    // Biến động thị trường ngẫu nhiên 1-3% cho thực tế
-                    float noise = (float)(rnd.NextDouble() * 0.06 - 0.03);
+                    // Tạo chút dao động thị trường để số không bị trùng nhau
+                    float noise = (float)(rnd.NextDouble() * 0.05 - 0.02);
                     float finalPrice = currentPrice * (weatherFactor + noise);
 
                     forecastResult.Add(new

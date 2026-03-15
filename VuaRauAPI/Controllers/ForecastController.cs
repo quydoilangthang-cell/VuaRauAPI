@@ -93,7 +93,7 @@ namespace VuaRauAPI.Controllers
                         float p = currentPrice * (1 + (float)(rndFallback.NextDouble() * 0.04 - 0.02));
                         fallback.Add(new { ngay = DateTime.Now.AddDays(i).ToString("dd/MM"), giaDuBao = Math.Round(p, 0), tinhTrang = "Chờ cập nhật khí tượng..." });
                     }
-                    return Ok(new { maHang = maHang, tenHang = tenHang, giaHienTai = currentPrice, duBao7Ngay = fallback });
+                    return Ok(new { ma = maHang, ten = tenHang, giaHienTai = currentPrice, duBao = fallback });
                 }
 
                 var weatherData = await weatherRes.Content.ReadAsStringAsync();
